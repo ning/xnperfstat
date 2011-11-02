@@ -1,0 +1,242 @@
+#!/bin/bash
+
+# xnperfstat, v0.2
+# gerir@ning.com
+# 2008.11.06
+#
+# a wrapper for NetApp's perfstat.
+# =========================================================================================
+
+export PATH=/bin:/usr/bin:/usr/sbin:/opt/csw/bin:/local/data/filer/bin
+
+## initialize some useful variables
+   #ME=${0##/*}             # whoami
+   ME="xnperfstat"
+   dbg=''                  # use -d to turn on debugging
+   mode=''                 # perf, conf, custom (when fed specific perfstat options)       
+   nagios=''               # if a NSCA report is to be submitted
+   rotate=''               # rotation?
+   unlock=''               # unlock
+
+   NAPERFSW_CONFIG="/local/data/filer/etc/xnperfstat.cfg"
+   NAPERFSW_LOCK=""
+
+   PERFSTAT_DATADIR_BASE='/local/data/filer/data/perfstat'
+
+   PERFSTAT_BIN='/local/data/filer/bin/perfstat.sh'
+   PERFSTAT_OPTS=''
+   PERFSTAT_LEVELS=''
+   PERFSTAT_XNOPTS=''  # XNPERFSW_OPTS
+
+   PERFSTAT_OUT_PREFX=''
+   PERFSTAT_OUT="stdout"
+   
+   NOWCASE=''
+   OUTCASE=''
+
+   nsca_hostname=''
+   nsca_svc_descr=''
+   nsca_rt=''
+   nsca_svc_output=''
+
+   function perror {
+      if [ -z "$1" -o -z "$2" ]; then
+           perror fatal "missing arguments to perror"
+      else
+         echo "$ME: $1: $2." >&2
+         case $1 in
+            'fatal') exit 1
+                     ;;
+         esac
+      fi
+   }
+   
+   function pdebug {
+      echo "$ME: debug: $1"
+   }
+
+   function send_nsca {
+      hostname=$1
+      svc_descr=$2
+      rt=$3
+      svc_output=$4
+
+      if /bin/printf "$hostname\t$svc_descr\t$rt\t$svc_output\n" | /usr/local/bin/send_nsca -H nagios -c /usr/local/etc/nagios/send_nsca.conf >/dev/null 2>&1; then
+         [ "$dbg" ] && echo "$ME: debug: send_nsca."
+         return 0
+      else
+         [ "$dbg" ] && echo "$ME: debug: send_nsca failed."
+         return 1
+      fi
+   }
+
+   function rotate {
+      local file=$1
+      local levels=$2
+
+      local level_upper=$((levels-1))
+      
+      local level_ptr=$level_upper
+      while [ $level_ptr -ge 0 ]; do
+         if [ -r "$file".$level_ptr ]; then
+	         level_dst=$((level_ptr+1))
+	         if mv "$file".$level_ptr "$file".$level_dst; then
+	            : #[ $dbg ] && echo "shifted $level_ptr to $level_dst"
+	         else
+	            perror fatal "failed to rotate $level_ptr"
+	         fi
+         else
+	         : #[ $dbg ] && echo "level $level_ptr does not exit"
+         fi
+         ((level_ptr--))
+      done
+      if mv "$file".0.tmp "$file".0; then
+         :
+      else
+         perror fatal "failed to rotate $file.0.tmp"
+      fi
+      
+      if [ -r $"$file".$levels ]; then
+         rm "$file".$levels
+      fi
+
+      return 0
+   }
+
+## read configuration
+   if [ -r "$NAPERFSW_CONFIG" ]; then
+      . "$NAPERFSW_CONFIG"
+      if [ -z "$XNPERFSW_OPTS" ]; then
+         perror fatal "missing XN options for perfstat"
+      else
+         PERFSTAT_XNOPTS="$XNPERFSW_OPTS"
+      fi
+   else
+      perror fatal "unable to read naperfsw configuration $NAPERFSW_CONFIG"
+   fi
+
+## process cli options and arguments
+
+   OPTSTRING=":hm:dnrut:o:"
+
+   OPTIND=1
+   while getopts "$OPTSTRING" opt; do
+      [ "$opt" == 'd' ] && dbg=1 && pdebug "debug mode enabled" || continue
+   done
+
+   OPTIND=1
+   while getopts "$OPTSTRING" opt; do          # silent error reporting (first colon)
+      case $opt in
+         'd')  continue
+               ;;
+         'n')  nagios=1
+	            [ "$dbg" ] && pdebug "nagios enabled."
+               ;;
+         'r')  rotate=1
+	            [ "$dbg" ] && pdebug "rotate enabled."
+               ;;
+         'u')  unlock=1
+	            [ "$dbg" ] && pdebug "unlock enabled."
+               ;;
+         'm')  case "$OPTARG" in
+                  'perf')  mode="$OPTARG"
+                           PERFSTAT_OPTS="$NAPERFSW_PERF_OPTS"
+                           PERFSTAT_LEVELS="$NAPERFSW_PERF_LEVELS"
+                           ;;
+                  'conf')  mode="$OPTARG"
+                           PERFSTAT_OPTS="$NAPERFSW_CONF_OPTS"
+                           PERFSTAT_LEVELS="$NAPERFSW_CONF_LEVELS"
+                           ;;
+                  *)       mode="custom"
+                           PERFSTAT_OPTS="$OPTARG"
+                           ;;
+              esac
+              [ "$dbg" ] && pdebug "mode $mode; perfstat options: $PERFSTAT_OPTS"
+              ;;
+         't') # NetApp Support ticket number
+              NOWCASE="$OPTARG"
+              [ "$dbg" ] && pdebug "netapp case $NOWCASE."
+              ;;
+         'o') # Output file
+              OUTFILE="$OPTARG"
+              [ "$dbg" ] && pdebug "output file: $OUTFILE."
+              ;;
+         *)   perror warning "invalid command line argument $opt"
+              ;;
+       esac
+   done
+
+   shift $(($OPTIND - 1))              # dump cli options
+   filerarg=$@                         # keep cli arguments: filer
+
+   # filer is "napXXXXX" and filer_fqdn = "napXXXX.ningops.com"
+   filer="${filerarg%%.ningops.com}"
+   filer_fqdn="${filer}.ningops.com"
+   [ "$dbg" ] && pdebug "filer $filer ($filer_fqdn)"
+
+   # lock beacon
+   NAPERFSW_LOCK="$PERFSTAT_DATADIR_BASE/$filer/perfstat.$mode.lck"
+
+   # sanity checks
+   [ "$filer" ] || perror fatal "filer not specified"
+   [ "$PERFSTAT_OPTS" ] || perror fatal "perfstat options not specified"
+
+   # unlock
+   if [ "$unlock" ]; then
+      [ "$dbg" ] && echo "$ME: debug: unlocking $NAPERFSW_LOCK"
+      [ -d "$NAPERFSW_LOCK" ] && rmdir $NAPERFSW_LOCK 2>/dev/null
+      exit 0
+   fi
+
+   # setup output
+   # # when rotation is enabled or a netapp case is specified, we take over the naming of the output file (and outfile is not allowed)
+   # # a netapp case *requires* custom parameters (-m)
+   case "$mode" in
+      "perf"|"conf") [ "$NOWCASE" ] && perror fatal "NOW case specified; must define custom perfstat parameters (-m)"
+                     if [ "$rotate" ]; then
+                        [ "$OUTFILE" ] && perror fatal "rotate mode enabled; cannot specify output file"
+                        PERFSTAT_OUT_PREFX=$PERFSTAT_DATADIR_BASE/$filer/perfstat.$mode
+                        PERFSTAT_OUT=$PERFSTAT_OUT_PREFX.0.tmp
+                     else
+                        [ "$OUTFILE" ] && PERFSTAT_OUT=$OUTFILE || PERFSTAT_OUT="stdout"
+                     fi
+                     ;;
+      "custom")      if [ "$NOWCASE" ]; then
+                        [ "$OUTFILE" ] && perror fatal "NOW case specified; cannot specify output file"
+                        PERFSTAT_OUT_PREFX=$PERFSTAT_DATADIR_BASE/$filer/perfstat.now-$NOWCASE
+                        PERFSTAT_OUT=$PERFSTAT_OUT_PREFX.0.tmp
+                        PERFSTAT_LEVELS=$DEF_PERFSTAT_LEVELS
+                        rotate=1
+                     else
+                        [ "$OUTFILE" ] && rotate='' && PERFSTAT_OUT=$OUTFILE || PERFSTAT_OUT="stdout"
+                     fi
+                     ;;
+      *)             perror fatal "invalid collection mode; aborting"
+                     ;;
+   esac
+   [ "$dbg" ] && pdebug "output: $PERFSTAT_OUT"
+   
+   [ "$PERFSTAT_OUT" == "stdout" ] && exec 3<&1 || exec 3>$PERFSTAT_OUT
+
+   if mkdir $NAPERFSW_LOCK 2>/dev/null; then
+      [ "$dbg" ] && echo "$ME: debug: locked $NAPERFSW_LOCK"
+      [ "$dbg" ] && echo "$ME: debug: run $PERFSTAT_BIN -f $filer $PERFSTAT_XNOPTS $PERFSTAT_OPTS"
+      
+      if $PERFSTAT_BIN -f $filer $PERFSTAT_XNOPTS $PERFSTAT_OPTS >&3 2>&3; then
+         [ "$dbg" ] && pdebug "perfstat run successfully"
+         if [ "$PERFSTAT_OUT_PREFX" -a "$PERFSTAT_LEVELS" -a "$rotate" ]; then
+            [ "$dbg" ] && pdebug "rotating $PERFSTAT_OUT_PREFX $PERFSTAT_LEVELS"
+            if rotate $PERFSTAT_OUT_PREFX $PERFSTAT_LEVELS; then
+               [ "$dbg" ] && pdebug "rotation successful"
+               [ "$nagios" ] && send_nsca $filer_fqdn perfstat 0 "perfstat run successfully"
+            fi
+         fi
+      else
+         [ "$nagios" ] && send_nsca $filer_fqdn perfstat 3 "perfstat returned an error"
+         perror fatal "perfstat returned an error"
+      fi
+      rmdir $NAPERFSW_LOCK 2>/dev/null
+      exit 0
+   else
+      perror fatal "failed to acquire lock $NAPERFSW_LOCK"
+   fi
