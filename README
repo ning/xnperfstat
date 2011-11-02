@@ -1,0 +1,94 @@
+NetApp perfstat wrapper
+
+SYNOPSIS
+
+  xnperfstat [-h] [-d] [-n] [-r] [-u] -m {perf|conf|<perfstat options>} <filer>
+
+DESCRIPTION
+
+xnperfstat is a wrapper for NetApp's perfstat tool. It is intended to allow for streamlined 
+invocation of perfstat and, from cron, to collect continuous perfstat samples (which NetApp
+can use to compare a filer's state before some event of interest takes place).
+
+There are three use cases xnperfstat:
+
+ + Collect perfstat data on a regular basis
+   Unattended fashion (via cron). This mode is specified with the -m flag and the perf or
+   conf parameters. In these modes, perfstat output may be redirected to stdout, or, if 
+   rotation is enabled, automagically redirected to a file in a ring which maintains up to
+   a number of samples at any given point in time. Older samples are discarded as new ones
+   are generated. Lower indexes imply newer samples.
+
+ + Collect perfstat data for a open NetApp Support case
+   This mode is specified with the -t flag, which accepts (but does not verify) a NetApp
+   Support case number and requires custom perfstat parameters via the -m flag. Rotation
+   is automatically enabled and output is redirected to a ring which maintains up to a 
+   number of samples at any given point in time. Older samples are discarded as new ones
+   are generated. Lower indexes imply newer samples.
+
+ + Collect perfstat data as a one-off
+   This mode outputs to stdout by default unless the -o flag is specified. Rotation is
+   disabled in this mode
+
+When rotation is enabled, files are stored in /local/data/filer/data/perfstat in a rotating
+ring (older filers are discarded as new ones are created).
+
+Its behavior is directed and modified via options. Some of them really only make sense when
+run from cron.
+
+ + -d runs xnperfstat in debug mode.
+
+ + -m direct the capture mode, performance perf, configuration conf, and custom (which is
+      selected when neither of the other two is used and perfstat options are passed). In
+      custom mode, a quote string can be passed that is fed to perfstat (for perfstat 
+      options -p, -t and -i); it is useful when NetApp requests a specific set of parameters
+      be passed to perfstat. All authentication parameters are still handled automatically.
+
+ + -n causes xnperfstat to submit passive tests results to Nagios (as perfstat service
+      description)
+
+ + -o <output_file> causes xnperfstat to dump perfstat output to <output_file>. This flag
+      is not allowed when rotation is enabled (-r) or when a NetApp Support case number if
+      provided (-t).
+
+ + -r causes xnperfstat to rotate perfstat output files.
+
+ + -t <NAcase> provides a NetApp Support case number, which is used to generate the output
+      file name (perfstat.now-<NAcase>.<index>).
+
+ + -u causes xnperfstat to unlock; when xnperfstat runs in a given mode (see below) and for
+      a give filer, it creates a lock file so as to avoid pileups of perfstat running
+      against one filer. If xnperfstat encounters an error condition it cannot handle, it
+      will leave the lock behind to force operator intervention.
+
+CONFIGURATION
+
+The xnperfstat configuration file specifies default options. It is a simple text file
+(really, a shell script defining some variable xnperfstat uses to set values.
+
+Currently this file is at /local/data/filer/etc/xnperfstat.cfg. Edit NAPERFSW_CONFIG to
+change this location.
+
+XNPERFSW_OPTS: defines authentication options for perfstat
+               default: -S -s i,/root/.ssh/perfstat_dsa -F
+NAPERFSW_PERF_LEVELS: number of performance data samples to keep
+                      default: 168 (1 week; 30 min samples)
+NAPERFSW_CONF_LEVELS: number of configuration data samples to keep
+                      default: 14 (2 weeks; daily samples)
+NAPERFSW_PERF_OPTS: perfstat performance collection parameters
+                    default: -p -t 5 -i 4,1
+NAPERFSW_CONF_OPTS: perfstat configuration collection parameters
+                    default: -c -t 1 -i 1
+DEF_PERFSTAT_LEVELS: default number of perfstat samples to keep for NOW
+                     default: 25
+
+EXAMPLES
+
+# xnperfstat -m "-i 1 -t 1" nap10001
+
+Performs a perfstat run with the custom perfstat parameters -i 1 -t 1. The perfstat output
+is sent to stdout. Redirect to taste (or use -o).
+
+# xnperfstat -m "-t 30 -i 1" nap10004
+Performs a perfstat run with the specific parameters "-m 30 -i 1" and sends the output to
+stdout. Redirect to taste.
