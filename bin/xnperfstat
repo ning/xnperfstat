@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# xnperfstat, v0.2
+# xnperfstat, v0.3
 # gerir@ning.com
-# 2008.11.06
+# 2011.11.03
 #
 # a wrapper for NetApp's perfstat.
 # =========================================================================================
@@ -18,7 +18,7 @@ export PATH=/bin:/usr/bin:/usr/sbin:/opt/csw/bin:/local/data/filer/bin
    rotate=''               # rotation?
    unlock=''               # unlock
 
-   NAPERFSW_CONFIG="/local/data/filer/etc/xnperfstat.cfg"
+   NAPERFSW_CONFIG="/local/etc/xnperfstat/xnperfstat.cfg"
    NAPERFSW_LOCK=""
 
    PERFSTAT_DATADIR_BASE='/local/data/filer/data/perfstat'
@@ -117,7 +117,7 @@ export PATH=/bin:/usr/bin:/usr/sbin:/opt/csw/bin:/local/data/filer/bin
 
 ## process cli options and arguments
 
-   OPTSTRING=":hm:dnrut:o:"
+   OPTSTRING=":hc:m:dnrut:o:"
 
    OPTIND=1
    while getopts "$OPTSTRING" opt; do
@@ -129,6 +129,9 @@ export PATH=/bin:/usr/bin:/usr/sbin:/opt/csw/bin:/local/data/filer/bin
       case $opt in
          'd')  continue
                ;;
+		 'c')  NAPERFSW_CONFIG="$OPTARG"
+		       [ ! -r "$cfgfile" ] && perror fatal "unable to read configuration file $cfgfile" || continue
+		       ;;
          'n')  nagios=1
 	            [ "$dbg" ] && pdebug "nagios enabled."
                ;;
