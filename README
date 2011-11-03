@@ -36,6 +36,8 @@ ring (older filers are discarded as new ones are created).
 Its behavior is directed and modified via options. Some of them really only make sense when
 run from cron.
 
+ + -c path to xnperfstat configuration file.
+
  + -d runs xnperfstat in debug mode.
 
  + -m direct the capture mode, performance perf, configuration conf, and custom (which is
